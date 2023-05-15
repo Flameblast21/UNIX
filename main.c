@@ -5,28 +5,35 @@
   @brief        LSH (Libstephen SHell)
 *******************************************************************************/
 
-#include <sys/wait.h>
-#include <unistd.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <utime.h>
+#include <unistd.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <dirent.h>
+
 
 /*
   Function Declarations for builtin shell commands:
  */
 int lsh_cd(char **args);
+int lsh_help(char **args);
 int lsh_exit(char **args);
 int lsh_touch(char **args);
 int lsh_ls(char **args);
 int lsh_rm(char **args);
 int lsh_mkdir(char **args);
 int lsh_rmdir(char **args);
-
 /*
   List of builtin commands, followed by their corresponding functions.
  */
 char *builtin_str[] = {
   "cd",
+  "help",
   "exit",
   "touch",
   "ls",
@@ -37,6 +44,7 @@ char *builtin_str[] = {
 
 int (*builtin_func[]) (char **) = {
   &lsh_cd,
+  &lsh_help,
   &lsh_exit,
   &lsh_touch,
   &lsh_ls,
@@ -54,44 +62,43 @@ int lsh_num_builtins() {
 */
 
 /**
-   @brief Bultin command: change directory.
+   @brief Builtin command: change directory.
    @param args List of args.  args[0] is "cd".  args[1] is the directory.
    @return Always returns 1, to continue executing.
  */
-int lsh_cd(char **args)
+int lsh_rmdir(char **args)
 {
   if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"cd\"\n");
+    fprintf(stderr, "lsh: expected argument to \"rmdir\"\n");
   } else {
-    if (chdir(args[1]) != 0) {
+    if (rmdir(args[1]) != 0) {
       perror("lsh");
     }
   }
   return 1;
 }
-
-int lsh_exit(char **args)
+int lsh_mkdir(char **args)
 {
-  return 0;
-}
-
-int lsh_touch(char **args)
-{
-  int i;
-
   if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"touch\"\n");
+    fprintf(stderr, "lsh: expected argument to \"mkdir\"\n");
   } else {
-    for (i = 1; args[i] != NULL; i++) {
-      if (touch(args[i]) != 0) {
-        perror("lsh");
-      }
+    if (mkdir(args[1], 0777) != 0) {
+      perror("lsh");
     }
   }
-
   return 1;
 }
-
+int lsh_rm(char **args)
+{
+  if (args[1] == NULL) {
+    fprintf(stderr, "lsh: expected argument to \"rm\"\n");
+  } else {
+    if (unlink(args[1]) != 0) {
+      perror("lsh");
+    }
+  }
+  return 1;
+}
 int lsh_ls(char **args)
 {
   DIR *dir;
@@ -109,41 +116,59 @@ int lsh_ls(char **args)
   closedir(dir);
   return 1;
 }
+int lsh_touch(char **args)
+{
+    // Open the file with O_CREAT flag to create a new file if it does not exist.
+    int fd = open(args[1], O_CREAT, 0644);
 
-int lsh_rm(char **args)
+    if (fd == -1) {
+        perror("lsh");
+    } else {
+        close(fd); 
+    }
+
+    return 1; 
+}
+int lsh_cd(char **args)
 {
   if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"rm\"\n");
+    fprintf(stderr, "lsh: expected argument to \"cd\"\n");
   } else {
-    if (unlink(args[1]) != 0) {
+    if (chdir(args[1]) != 0) {
       perror("lsh");
     }
   }
   return 1;
 }
 
-int lsh_mkdir(char **args)
+/**
+   @brief Builtin command: print help.
+   @param args List of args.  Not examined.
+   @return Always returns 1, to continue executing.
+ */
+int lsh_help(char **args)
 {
-  if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"mkdir\"\n");
-  } else {
-    if (mkdir(args[1], 0777) != 0) {
-      perror("lsh");
-    }
+  int i;
+  printf("Stephen Brennan's LSH\n");
+  printf("Type program names and arguments, and hit enter.\n");
+  printf("The following are built in:\n");
+
+  for (i = 0; i < lsh_num_builtins(); i++) {
+    printf("  %s\n", builtin_str[i]);
   }
+
+  printf("Use the man command for information on other programs.\n");
   return 1;
 }
 
-int lsh_rmdir(char **args)
+/**
+   @brief Builtin command: exit.
+   @param args List of args.  Not examined.
+   @return Always returns 0, to terminate execution.
+ */
+int lsh_exit(char **args)
 {
-  if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"rmdir\"\n");
-  } else {
-    if (rmdir(args[1]) != 0) {
-      perror("lsh");
-    }
-  }
-  return 1;
+  return 0;
 }
 
 /**
@@ -153,7 +178,7 @@ int lsh_rmdir(char **args)
  */
 int lsh_launch(char **args)
 {
-  pid_t pid, wpid;
+  pid_t pid;
   int status;
 
   pid = fork();
@@ -169,7 +194,7 @@ int lsh_launch(char **args)
   } else {
     // Parent process
     do {
-      wpid = waitpid(pid, &status, WUNTRACED);
+      waitpid(pid, &status, WUNTRACED);
     } while (!WIFEXITED(status) && !WIFSIGNALED(status));
   }
 
@@ -199,13 +224,26 @@ int lsh_execute(char **args)
   return lsh_launch(args);
 }
 
-#define LSH_RL_BUFSIZE 1024
 /**
    @brief Read a line of input from stdin.
    @return The line from stdin.
  */
 char *lsh_read_line(void)
 {
+#ifdef LSH_USE_STD_GETLINE
+  char *line = NULL;
+  ssize_t bufsize = 0; // have getline allocate a buffer for us
+  if (getline(&line, &bufsize, stdin) == -1) {
+    if (feof(stdin)) {
+      exit(EXIT_SUCCESS);  // We received an EOF
+    } else  {
+      perror("lsh: getline\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+  return line;
+#else
+#define LSH_RL_BUFSIZE 1024
   int bufsize = LSH_RL_BUFSIZE;
   int position = 0;
   char *buffer = malloc(sizeof(char) * bufsize);
@@ -220,8 +258,9 @@ char *lsh_read_line(void)
     // Read a character
     c = getchar();
 
-    // If we hit EOF, replace it with a null character and return.
-    if (c == EOF || c == '\n') {
+    if (c == EOF) {
+      exit(EXIT_SUCCESS);
+    } else if (c == '\n') {
       buffer[position] = '\0';
       return buffer;
     } else {
@@ -239,6 +278,7 @@ char *lsh_read_line(void)
       }
     }
   }
+#endif
 }
 
 #define LSH_TOK_BUFSIZE 64
@@ -252,7 +292,7 @@ char **lsh_split_line(char *line)
 {
   int bufsize = LSH_TOK_BUFSIZE, position = 0;
   char **tokens = malloc(bufsize * sizeof(char*));
-  char *token;
+  char *token, **tokens_backup;
 
   if (!tokens) {
     fprintf(stderr, "lsh: allocation error\n");
@@ -266,8 +306,10 @@ char **lsh_split_line(char *line)
 
     if (position >= bufsize) {
       bufsize += LSH_TOK_BUFSIZE;
+      tokens_backup = tokens;
       tokens = realloc(tokens, bufsize * sizeof(char*));
       if (!tokens) {
+		free(tokens_backup);
         fprintf(stderr, "lsh: allocation error\n");
         exit(EXIT_FAILURE);
       }
@@ -316,4 +358,3 @@ int main(int argc, char **argv)
 
   return EXIT_SUCCESS;
 }
-
